@@ -15,6 +15,15 @@
     state: absent
     purge: yes
 
+- name: Remove conflicting Docker APT source files
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/apt/sources.list.d/docker.list
+    - /etc/apt/sources.list.d/docker-ce.list
+    - /etc/apt/sources.list.d/docker.repo
+
 - name: Install required packages
   apt:
     name:
