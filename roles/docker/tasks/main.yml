@@ -15,19 +15,14 @@
 
 - name: Stop all running containers (best effort)
   shell: "docker ps -q | xargs -r docker stop"
-  args:
-    warn: false
   changed_when: false
   ignore_errors: yes
 
 - name: Unmount overlay2 submounts (best effort)
-  when: docker_unmount_overlay2 | bool
   shell: |
     set -e
     mount | awk '/\/var\/lib\/docker\/overlay2\/.*\/merged/ {print $3}' \
       | tac | xargs -r -n1 umount -lf
-  args:
-    warn: false
   changed_when: false
   ignore_errors: yes
 
