@@ -1,48 +1,38 @@
 ---
+- name: Compute repo arch
+  set_fact:
+    docker_repo_arch: "{{ docker_repo_arch_map.get(ansible_architecture, 'amd64') }}"
 
-- name: Remove conflicting Debian Docker packages
-  apt:
-    name:
-      - docker
-      - docker.io
-      - docker-doc
-      - docker-compose
-      - docker-compose-plugin
-      - docker-buildx
-      - podman-docker
-      - containerd
-      - runc
-    state: absent
-    purge: yes
-- name: Stop Docker service if running
+# -----------------------------
+# PREP: stop docker, clean overlays, clear conflicting repos/keys
+# -----------------------------
+
+- name: Stop Docker service if running (best effort)
   service:
     name: docker
     state: stopped
   ignore_errors: yes
 
-- name: Unmount leftover Docker overlay mounts
-  command: umount -f {{ item }}
-  with_items:
-    - /var/lib/docker/overlay2
+- name: Stop all running containers (best effort)
+  shell: "docker ps -q | xargs -r docker stop"
+  args:
+    warn: false
+  changed_when: false
   ignore_errors: yes
 
-- name: Remove legacy Docker repo file
-  file:
-    path: /etc/apt/sources.list.d/docker.list
-    state: absent
+- name: Unmount overlay2 submounts (best effort)
+  when: docker_unmount_overlay2 | bool
+  shell: |
+    set -e
+    mount | awk '/\/var\/lib\/docker\/overlay2\/.*\/merged/ {print $3}' \
+      | tac | xargs -r -n1 umount -lf
+  args:
+    warn: false
+  changed_when: false
+  ignore_errors: yes
 
-- name: Remove legacy Docker repo file
-  file:
-    path: /etc/apt/sources.list.d/docker.list
-    state: absent
-
-- name: Remove legacy Docker GPG key
-  file:
-    path: /etc/apt/keyrings/docker.asc
-    state: absent
-
-
-- name: Remove conflicting Docker APT source files
+- name: Remove legacy Docker APT source files (avoid Signed-By conflicts)
+  when: docker_cleanup_repos | bool
   file:
     path: "{{ item }}"
     state: absent
@@ -50,6 +40,41 @@
     - /etc/apt/sources.list.d/docker.list
     - /etc/apt/sources.list.d/docker-ce.list
     - /etc/apt/sources.list.d/docker.repo
+
+- name: Remove legacy Docker key files (both common locations)
+  when: docker_cleanup_repos | bool
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/apt/keyrings/docker.asc
+    - /usr/share/keyrings/docker.gpg
+
+# -----------------------------
+# REMOVE conflicting Debian packages first
+# -----------------------------
+
+- name: Remove Debian Docker packages (docker.io & friends)
+  when: docker_remove_debian_pkgs | bool
+  apt:
+    name:
+      - docker
+      - docker.io
+      - docker-doc
+      - docker-cli
+      - docker-compose
+      - docker-compose-plugin
+      - docker-buildx
+      - docker-buildx-plugin
+      - containerd
+      - runc
+    state: absent
+    purge: yes
+    update_cache: yes
+
+# -----------------------------
+# PREREQS + KEY + REPO
+# -----------------------------
 
 - name: Install required packages
   apt:
@@ -62,20 +87,32 @@
     state: present
     update_cache: yes
 
-- name: Add Docker’s official GPG key
-  ansible.builtin.shell: |
-    curl -fsSL https://download.docker.com/linux/{{ ansible_distribution | lower }}/gpg \
-      | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+# Use curl | gpg --dearmor because apt_key is deprecated on newer distros
+- name: Install Docker’s official GPG key (dearmored)
+  shell: |
+    set -e
+    curl -fsSL "https://download.docker.com/linux/{{ ansible_distribution | lower }}/gpg" \
+      | gpg --dearmor -o "{{ docker_keyring_path }}"
   args:
-    creates: /usr/share/keyrings/docker-archive-keyring.gpg
+    creates: "{{ docker_keyring_path }}"
 
-- name: Add Docker repository
+- name: Add Docker APT repository (idempotent)
   apt_repository:
-    repo: "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/{{ ansible_distribution | lower }} {{ ansible_distribution_release }} stable"
+    repo: "deb [arch={{ docker_repo_arch }} signed-by={{ docker_keyring_path }}] https://download.docker.com/linux/{{ ansible_distribution | lower }} {{ ansible_distribution_release }} stable"
     state: present
     filename: docker
+  register: docker_repo_added
 
-- name: Install Docker
+- name: apt update if repo changed
+  apt:
+    update_cache: yes
+  when: docker_repo_added is changed
+
+# -----------------------------
+# INSTALL ENGINE + COMPOSE PLUGIN
+# -----------------------------
+
+- name: Install Docker Engine
   apt:
     name: "{{ docker_package }}"
     state: present
@@ -86,19 +123,36 @@
   apt:
     name: docker-compose-plugin
     state: present
-    update_cache: yes
 
-- name: Verify Docker Compose installation
-  command: docker compose version
-  register: compose_version
-  changed_when: false
+- name: Install Buildx plugin (optional but useful)
+  apt:
+    name: docker-buildx-plugin
+    state: present
+  ignore_errors: yes
 
-- name: Show Docker Compose version
-  debug:
-    var: compose_version.stdout
+# -----------------------------
+# VERIFY + SERVICE
+# -----------------------------
 
-- name: Ensure Docker is running
+- name: Ensure Docker is enabled and started
   service:
     name: docker
     state: started
     enabled: yes
+
+- name: Verify Docker CLI
+  command: docker --version
+  register: docker_version
+  changed_when: false
+
+- name: Verify Docker Compose
+  command: docker compose version
+  register: compose_version
+  changed_when: false
+  failed_when: false
+
+- name: Show versions
+  debug:
+    msg:
+      - "{{ docker_version.stdout | default('docker --version not available') }}"
+      - "{{ compose_version.stdout | default('compose not available') }}"

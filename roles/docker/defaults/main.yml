@@ -1,2 +1,26 @@
 ---
+# Package name for Docker Engine from Docker's repo
 docker_package: docker-ce
+
+# Map Ansible architectures to Docker repo arch
+docker_repo_arch_map:
+  x86_64: amd64
+  amd64: amd64
+  aarch64: arm64
+  arm64: arm64
+  armv7l: armhf
+  armhf: armhf
+  armv6l: armel
+  armel: armel
+
+# Keyring path we will standardize on
+docker_keyring_path: /usr/share/keyrings/docker-archive-keyring.gpg
+
+# Whether to remove Debian's docker packages before installing CE
+docker_remove_debian_pkgs: true
+
+# Whether to purge legacy repo files/keys first (fixes Signed-By conflicts)
+docker_cleanup_repos: true
+
+# Whether to attempt unmounting any overlay2 mounts (prevents docker.io purge failures)
+docker_unmount_overlay2: true
